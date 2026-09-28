@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Algebra 1 Equation Solver</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & ReactDOM CDN -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel CDN for inline JSX execution -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    .math-font {
+      font-family: 'Cambria Math', 'STIX Two Math', 'Times New Roman', serif;
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // --- Lightweight Fraction Arithmetic Helper ---
+    const Frac = {
+      create: (n, d = 1) => {
+        if (d === 0) throw new Error("Division by zero");
+        if (d < 0) { n = -n; d = -d; }
+        const g = Frac.gcd(Math.abs(n), Math.abs(d));
+        return { n: n / g, d: d / g };
+      },
+      gcd: (a, b) => b === 0 ? a : Frac.gcd(b, a % b),
+      add: (f1, f2) => Frac.create(f1.n * f2.d + f2.n * f1.d, f1.d * f2.d),
+      sub: (f1, f2) => Frac.create(f1.n * f2.d - f2.n * f1.d, f1.d * f2.d),
+      mul: (f1, f2) => Frac.create(f1.n * f2.n, f1.d * f2.d),
+      div: (f1, f2) => Frac.create(f1.n * f2.d, f1.d * f2.n),
+      isZero: (f) => f.n === 0,
+      isOne: (f) => f.n === 1 && f.d === 1,
+      isNegOne: (f) => f.n === -1 && f.d === 1,
+      isPositive: (f) => f.n > 0,
+      neg: (f) => Frac.create(-f.n, f.d),
+      toString: (f) => f.d === 1 ? `${f.n}` : `${f.n}/${f.d}`
+    };
+
+    // --- Equation Parser & AST Engine ---
+    function parseEquation(eqStr) {
+      const parts = eqStr.split('=');
+      if (parts.length !== 2) throw new Error("Equation must contain exactly one '='");
+      const leftTerms = parseExpression(parts[0].trim());
+      const rightTerms = parseExpression(parts[1].trim());
+      return { left: leftTerms, right: rightTerms };
+    }
+
+    function parseExpression(exprStr) {
+      let s = exprStr.replace(/\s+/g, '');
+      const terms = [];
+      let i = 0;
+      let termId = 1;
+
+      while (i < s.length) {
+        let sign = 1;
+        if (s[i] === '+') { i++; }
+        else if (s[i] === '-') { sign = -1; i++; }
+
+        let start = i;
+        if (s[i] === '(') {
+          let depth = 1;
+          i++;
+          while (i < s.length && depth > 0) {
+            if (s[i] === '(') depth++;
+            else if (s[i] === ')') depth--;
+            i++;
+          }
+          const innerExpr = s.slice(start + 1, i - 1);
+          let divisor = 1;
+          if (i < s.length && s[i] === '/') {
+            i++;
+            const divStart = i;
+            while (i < s.length && /[0-9]/.test(s[i])) i++;
+            divisor = parseInt(s.slice(divStart, i), 10);
+          }
+          terms.push({
+            id: 't_' + Math.random().toString(36).substr(2, 9),
+            type: 'group_div',
+            coeff: Frac.create(sign, divisor),
+            inner: parseExpression(innerExpr)
+          });
+          continue;
+        }
+
+        let numStr = '';
+        while (i < s.length && /[0-9]/.test(s[i])) {
+          numStr += s[i];
+          i++;
+        }
+
+        if (i < s.length && s[i] === '(') {
+          const coeffNum = numStr === '' ? 1 : parseInt(numStr, 10);
+          const depthStart = i;
+          let depth = 1;
+          i++;
+          while (i < s.length && depth > 0) {
+            if (s[i] === '(') depth++;
+            else if (s[i] === ')') depth--;
+            i++;
+          }
+          const innerExpr = s.slice(depthStart + 1, i - 1);
+          terms.push({
+            id: 't_' + Math.random().toString(36).substr(2, 9),
+            type: 'product',
+            coeff: Frac.create(sign * coeffNum, 1),
+            inner: parseExpression(innerExpr)
+          });
+          continue;
+        }
+
+        let isVar = false;
+        if (i < s.length && /[a-zA-Z]/.test(s[i])) {
+          isVar = true;
+          i++;
+        }
+
+        let divisor = 1;
+        if (i < s.length && s[i] === '/') {
+          i++;
+          const divStart = i;
+          while (i < s.length && /[0-9]/.test(s[i])) i++;
+          divisor = parseInt(s.slice(divStart, i), 10);
+        }
+
+        const numVal = numStr === '' ? 1 : parseInt(numStr, 10);
+        const fracVal = Frac.create(sign * numVal, divisor);
+
+        if (isVar) {
+          terms.push({
+            id: 't_' + Math.random().toString(36).substr(2, 9),
+            type: 'var',
+            coeff: fracVal,
+            varName: 'x'
+          });
+        } else {
+          terms.push({
+            id: 't_' + Math.random().toString(36).substr(2, 9),
+            type: 'const',
+            val: fracVal
+          });
+        }
+      }
+      return terms;
+    }
+
+    const EXAMPLES = [
+      "3(x + 2) - 5 = 10",
+      "4(x - 4) = 2x",
+      "2x + 6 = 4x - 8",
+      "5(x - 3) = 2x + 9",
+      "(x + 6)/3 = 5",
+      "6x - 8 = 4x + 10"
+    ];
+
+    function App() {
+      const [inputVal, setInputVal] = useState(EXAMPLES[0]);
+      const [history, setHistory] = useState([]);
+      const [activeSelection, setActiveSelection] = useState(null);
+      const [popupPos, setPopupPos] = useState({ top: 0, left: 0, arrowLeft: 0 });
+      const containerRef = useRef(null);
+
+      const initEquation = (eqStr) => {
+        try {
+          const parsed = parseEquation(eqStr);
+          setHistory([{
+            step: 0,
+            summary: null,
+            eq: parsed
+          }]);
+          setActiveSelection(null);
+        } catch (e) {
+          alert("Invalid Equation format. Please use standard linear syntax (e.g., 3(x + 2) - 5 = 10).");
+        }
+      };
+
+      useEffect(() => {
+        initEquation(inputVal);
+      }, []);
+
+      const handleRandom = () => {
+        const pool = EXAMPLES.filter(e => e !== inputVal);
+        const next = pool[Math.floor(Math.random() * pool.length)];
+        setInputVal(next);
+        initEquation(next);
+      };
+
+      const handleUndo = () => {
+        if (history.length > 1) {
+          setHistory(prev => prev.slice(0, -1));
+          setActiveSelection(null);
+        }
+      };
+
+      const currentStep = history[history.length - 1];
+      const currentEq = currentStep ? currentStep.eq : null;
+
+      // Check if solved: single var term on left with coeff 1, single const on right, nothing else
+      const isSolved = (eq) => {
+        if (!eq) return false;
+        if (eq.left.length === 1 && eq.right.length === 1) {
+          const l = eq.left[0];
+          const r = eq.right[0];
+          if (l.type === 'var' && Frac.isOne(l.coeff) && r.type === 'const') return true;
+          if (r.type === 'var' && Frac.isOne(r.coeff) && l.type === 'const') return true;
+        }
+        return false;
+      };
+
+      // --- Math Operations ---
+      const applyOperation = (op) => {
+        if (!currentEq) return;
+        let newEq = JSON.parse(JSON.stringify(currentEq));
+        let summaryText = "";
+
+        if (op.type === 'distribute') {
+          const side = op.side;
+          newEq[side] = newEq[side].flatMap(term => {
+            if (term.id === op.termId && (term.type === 'product' || term.type === 'group_div')) {
+              return term.inner.map(inTerm => {
+                if (inTerm.type === 'var') {
+                  return {
+                    id: 't_' + Math.random().toString(36).substr(2, 9),
+                    type: 'var',
+                    coeff: Frac.mul(term.coeff, inTerm.coeff),
+                    varName: inTerm.varName
+                  };
+                } else if (inTerm.type === 'const') {
+                  return {
+                    id: 't_' + Math.random().toString(36).substr(2, 9),
+                    type: 'const',
+                    val: Frac.mul(term.coeff, inTerm.val)
+                  };
+                }
+                return inTerm;
+              });
+            }
+            return [term];
+          });
+          newEq[side] = combineSide(newEq[side]);
+          summaryText = `Distribute across parentheses`;
+        } else if (op.type === 'balance_add_sub') {
+          const { moveVal, isVar, varName } = op;
+          const leftTarget = isVar ? { type: 'var', coeff: Frac.neg(moveVal), varName } : { type: 'const', val: Frac.neg(moveVal) };
+          const rightTarget = isVar ? { type: 'var', coeff: Frac.neg(moveVal), varName } : { type: 'const', val: Frac.neg(moveVal) };
+
+          newEq.left.push(leftTarget);
+          newEq.right.push(rightTarget);
+
+          newEq.left = combineSide(newEq.left);
+          newEq.right = combineSide(newEq.right);
+
+          const signStr = Frac.isPositive(moveVal) ? "Subtract" : "Add";
+          const displayFrac = Frac.isPositive(moveVal) ? moveVal : Frac.neg(moveVal);
+          summaryText = `${signStr} ${Frac.toString(displayFrac)}${isVar ? varName : ''} on both sides`;
+        } else if (op.type === 'divide_both') {
+          const factor = op.factor;
+          const divideSide = (sideTerms) => {
+            return sideTerms.map(term => {
+              if (term.type === 'var') {
+                return { ...term, coeff: Frac.div(term.coeff, factor) };
+              } else if (term.type === 'const') {
+                return { ...term, val: Frac.div(term.val, factor) };
+              } else if (term.type === 'product' || term.type === 'group_div') {
+                return { ...term, coeff: Frac.div(term.coeff, factor) };
+              }
+              return term;
+            });
+          };
+
+          newEq.left = combineSide(divideSide(newEq.left));
+          newEq.right = combineSide(divideSide(newEq.right));
+          summaryText = `Divide both sides by ${Frac.toString(factor)}`;
+        } else if (op.type === 'multiply_both') {
+          const factor = op.factor;
+          const multiplySide = (sideTerms) => {
+            return sideTerms.map(term => {
+              if (term.type === 'var') {
+                return { ...term, coeff: Frac.mul(term.coeff, factor) };
+              } else if (term.type === 'const') {
+                return { ...term, val: Frac.mul(term.val, factor) };
+              } else if (term.type === 'group_div' || term.type === 'product') {
+                return { ...term, coeff: Frac.mul(term.coeff, factor) };
+              }
+              return term;
+            });
+          };
+
+          newEq.left = combineSide(multiplySide(newEq.left));
+          newEq.right = combineSide(multiplySide(newEq.right));
+          summaryText = `Multiply both sides by ${Frac.toString(factor)}`;
+        }
+
+        setHistory(prev => [
+          ...prev,
+          {
+            step: prev.length,
+            summary: summaryText,
+            eq: newEq
+          }
+        ]);
+        setActiveSelection(null);
+      };
+
+      const combineSide = (terms) => {
+        let totalVar = Frac.create(0, 1);
+        let totalConst = Frac.create(0, 1);
+        const others = [];
+
+        terms.forEach(t => {
+          if (t.type === 'var') totalVar = Frac.add(totalVar, t.coeff);
+          else if (t.type === 'const') totalConst = Frac.add(totalConst, t.val);
+          else others.push(t);
+        });
+
+        const res = [];
+        if (!Frac.isZero(totalVar)) {
+          res.push({
+            id: 't_' + Math.random().toString(36).substr(2, 9),
+            type: 'var',
+            coeff: totalVar,
+            varName: 'x'
+          });
+        }
+        others.forEach(o => res.push(o));
+        if (!Frac.isZero(totalConst) || res.length === 0) {
+          res.push({
+            id: 't_' + Math.random().toString(36).substr(2, 9),
+            type: 'const',
+            val: totalConst
+          });
+        }
+        return res;
+      };
+
+      // --- Interactive Click Handler ---
+      const handleTokenClick = (e, item) => {
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const containerRect = containerRef.current.getBoundingClientRect();
+
+        const naturalLeft = rect.left + rect.width / 2 - containerRect.left;
+        const top = rect.bottom - containerRect.top + 8;
+
+        const popupWidth = 240;
+        const screenMargin = 16;
+        const minLeft = screenMargin;
+        const maxLeft = containerRect.width - popupWidth - screenMargin;
+
+        const constrainedLeft = Math.max(minLeft, Math.min(naturalLeft - popupWidth / 2, maxLeft));
+        const arrowLeft = naturalLeft - constrainedLeft;
+
+        setPopupPos({ top, left: constrainedLeft, arrowLeft });
+        setActiveSelection(item);
+      };
+
+      // --- Vertical Fraction Renderer ---
+      const renderFraction = (f, showSign = false) => {
+        const isNeg = f.n < 0;
+        const absN = Math.abs(f.n);
+        const absD = Math.abs(f.d);
+
+        let signPrefix = "";
+        if (showSign) {
+          signPrefix = isNeg ? "- " : "+ ";
+        } else if (isNeg) {
+          signPrefix = "-";
+        }
+
+        if (absD === 1) {
+          return <span>{signPrefix}{absN}</span>;
+        }
+
+        return (
+          <span className="inline-flex items-center mx-1">
+            {signPrefix && <span className="mr-1">{signPrefix}</span>}
+            <span className="inline-flex flex-col items-center justify-center align-middle text-center">
+              <span className="border-b-2 border-slate-700 px-1 pb-0.5 leading-none w-full text-center">{absN}</span>
+              <span className="pt-0.5 leading-none w-full text-center">{absD}</span>
+            </span>
+          </span>
+        );
+      };
+
+      // --- Tokenized Interactive Math Renderer ---
+      const renderTerm = (term, side, isLastLine, isFirst) => {
+        const isSelected = activeSelection && activeSelection.termId === term.id;
+
+        const getUnderlineClass = (selected) =>
+          isLastLine
+            ? `cursor-pointer transition-all duration-150 border-b-2 ${
+                selected
+                  ? 'border-indigo-600 text-indigo-700 font-medium'
+                  : 'border-slate-300 hover:border-indigo-400'
+              }`
+            : '';
+
+        if (term.type === 'var') {
+          const absCoeff = { n: Math.abs(term.coeff.n), d: Math.abs(term.coeff.d) };
+          const isNegative = term.coeff.n < 0;
+          const showSignChar = !isFirst ? (isNegative ? ' - ' : ' + ') : (isNegative ? '-' : '');
+
+          const coeffIsOne = absCoeff.n === 1 && absCoeff.d === 1;
+
+          return (
+            <span key={term.id} className="inline-flex items-center text-4xl select-none mx-1">
+              {!isFirst && <span className="mx-1 text-slate-500">{isNegative ? '−' : '+'}</span>}
+              {isFirst && isNegative && <span className="mr-0.5 text-slate-700">−</span>}
+              
+              <span
+                className={getUnderlineClass(isSelected)}
+                onClick={(e) => isLastLine && handleTokenClick(e, {
+                  type: 'var',
+                  termId: term.id,
+                  side,
+                  term
+                })}
+              >
+                {!coeffIsOne && renderFraction(absCoeff, false)}
+                <span className="italic">{term.varName}</span>
+              </span>
+            </span>
+          );
+        }
+
+        if (term.type === 'const') {
+          const isNegative = term.val.n < 0;
+          const absVal = { n: Math.abs(term.val.n), d: Math.abs(term.val.d) };
+
+          return (
+            <span key={term.id} className="inline-flex items-center text-4xl select-none mx-1">
+              {!isFirst && <span className="mx-1 text-slate-500">{isNegative ? '−' : '+'}</span>}
+              {isFirst && isNegative && <span className="mr-0.5 text-slate-700">−</span>}
+              <span
+                className={getUnderlineClass(isSelected)}
+                onClick={(e) => isLastLine && handleTokenClick(e, {
+                  type: 'const',
+                  termId: term.id,
+                  side,
+                  term
+                })}
+              >
+                {renderFraction(absVal, false)}
+              </span>
+            </span>
+          );
+        }
+
+        if (term.type === 'product') {
+          const isCoeffSelected = isSelected && activeSelection.part === 'coeff';
+          const isGroupSelected = isSelected && activeSelection.part === 'group';
+
+          return (
+            <span key={term.id} className="inline-flex items-center text-4xl select-none mx-1">
+              {!isFirst && <span className="mx-1 text-slate-500">{term.coeff.n < 0 ? '−' : '+'}</span>}
+              <span
+                className={`mr-1 ${getUnderlineClass(isCoeffSelected)}`}
+                onClick={(e) => isLastLine && handleTokenClick(e, {
+                  type: 'product_coeff',
+                  termId: term.id,
+                  side,
+                  term,
+                  part: 'coeff'
+                })}
+              >
+                {Math.abs(term.coeff.n)}
+              </span>
+              <span
+                className={getUnderlineClass(isGroupSelected)}
+                onClick={(e) => isLastLine && handleTokenClick(e, {
+                  type: 'product_group',
+                  termId: term.id,
+                  side,
+                  term,
+                  part: 'group'
+                })}
+              >
+                ({term.inner.map((it, idx) => renderTerm(it, side, false, idx === 0))})
+              </span>
+            </span>
+          );
+        }
+
+        if (term.type === 'group_div') {
+          const isGroupSelected = isSelected && activeSelection.part === 'group';
+          const isDenomSelected = isSelected && activeSelection.part === 'denom';
+
+          return (
+            <span key={term.id} className="inline-flex flex-col items-center justify-center align-middle text-3xl select-none mx-2">
+              <span
+                className={`border-b-2 border-slate-700 px-2 pb-1 ${getUnderlineClass(isGroupSelected)}`}
+                onClick={(e) => isLastLine && handleTokenClick(e, {
+                  type: 'group_div_group',
+                  termId: term.id,
+                  side,
+                  term,
+                  part: 'group'
+                })}
+              >
+                ({term.inner.map((it, idx) => renderTerm(it, side, false, idx === 0))})
+              </span>
+              <span
+                className={`pt-1 ${getUnderlineClass(isDenomSelected)}`}
+                onClick={(e) => isLastLine && handleTokenClick(e, {
+                  type: 'group_div_denom',
+                  termId: term.id,
+                  side,
+                  term,
+                  part: 'denom'
+                })}
+              >
+                {term.coeff.d}
+              </span>
+            </span>
+          );
+        }
+
+        return null;
+      };
+
+      const renderEquationLine = (eqObj, isLastLine) => {
+        return (
+          <div className="flex items-center justify-center py-4 text-4xl math-font flex-wrap">
+            <div className="flex items-center justify-end flex-1">
+              {eqObj.left.map((term, idx) => renderTerm(term, 'left', isLastLine, idx === 0))}
+            </div>
+            <div className="mx-6 text-4xl text-slate-700 select-none">=</div>
+            <div className="flex items-center justify-start flex-1">
+              {eqObj.right.map((term, idx) => renderTerm(term, 'right', isLastLine, idx === 0))}
+            </div>
+          </div>
+        );
+      };
+
+      // Generate contextually valid operations based on selected token
+      const getActionOptions = () => {
+        if (!activeSelection) return [];
+        const { type, side, term } = activeSelection;
+        const options = [];
+
+        if (type === 'product_coeff') {
+          options.push({
+            label: `Divide both sides by ${Frac.toString(term.coeff)}`,
+            action: { type: 'divide_both', factor: term.coeff }
+          });
+          options.push({
+            label: `Distribute ${Frac.toString(term.coeff)} across parentheses`,
+            action: { type: 'distribute', termId: term.id, side }
+          });
+        } else if (type === 'product_group') {
+          options.push({
+            label: `Distribute ${Frac.toString(term.coeff)} across parentheses`,
+            action: { type: 'distribute', termId: term.id, side }
+          });
+        } else if (type === 'group_div_denom') {
+          options.push({
+            label: `Multiply both sides by ${term.coeff.d}`,
+            action: { type: 'multiply_both', factor: Frac.create(term.coeff.d, 1) }
+          });
+        } else if (type === 'group_div_group') {
+          options.push({
+            label: `Multiply both sides by ${term.coeff.d}`,
+            action: { type: 'multiply_both', factor: Frac.create(term.coeff.d, 1) }
+          });
+        } else if (type === 'const') {
+          const invSign = term.val.n > 0 ? "Subtract" : "Add";
+          const absVal = Frac.isPositive(term.val) ? term.val : Frac.neg(term.val);
+          options.push({
+            label: `${invSign} ${Frac.toString(absVal)} on both sides`,
+            action: { type: 'balance_add_sub', moveVal: term.val, isVar: false }
+          });
+        } else if (type === 'var') {
+          // If coefficient != 1, offer divide
+          if (!Frac.isOne(term.coeff)) {
+            options.push({
+              label: `Divide both sides by ${Frac.toString(term.coeff)}`,
+              action: { type: 'divide_both', factor: term.coeff }
+            });
+          }
+          // Also offer moving variable term to other side
+          const invSign = term.coeff.n > 0 ? "Subtract" : "Add";
+          const absCoeff = Frac.isPositive(term.coeff) ? term.coeff : Frac.neg(term.coeff);
+          options.push({
+            label: `${invSign} ${Frac.toString(absCoeff)}${term.varName} on both sides`,
+            action: { type: 'balance_add_sub', moveVal: term.coeff, isVar: true, varName: term.varName }
+          });
+        }
+
+        return options;
+      };
+
+      const solved = isSolved(currentEq);
+
+      return (
+        <div className="max-w-4xl mx-auto px-4 py-8" onClick={() => setActiveSelection(null)}>
+          {/* Top Control Bar */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                type="text"
+                value={inputVal}
+                onChange={(e) => setInputVal(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && initEquation(inputVal)}
+                placeholder="Enter linear equation..."
+                className="flex-1 min-w-[200px] text-lg px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+              />
+              <button
+                onClick={() => initEquation(inputVal)}
+                className="px-5 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 active:scale-95 transition-all text-sm uppercase tracking-wider"
+              >
+                Start
+              </button>
+              <button
+                onClick={handleRandom}
+                className="px-4 py-2.5 bg-slate-100 text-slate-700 font-medium rounded-lg hover:bg-slate-200 active:scale-95 transition-all text-sm"
+              >
+                Random
+              </button>
+              <button
+                onClick={handleUndo}
+                disabled={history.length <= 1}
+                className={`px-4 py-2.5 font-medium rounded-lg active:scale-95 transition-all text-sm ${
+                  history.length > 1
+                    ? 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    : 'bg-slate-50 text-slate-300 cursor-not-allowed'
+                }`}
+              >
+                Undo
+              </button>
+            </div>
+          </div>
+
+          {/* Equation Canvas Area */}
+          <div ref={containerRef} className="relative bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-10 min-h-[420px]">
+            {history.map((step, idx) => {
+              const isLast = idx === history.length - 1;
+              return (
+                <div key={idx} className="flex flex-col items-center w-full">
+                  {step.summary && (
+                    <div className="flex items-center my-3 w-full">
+                      <div className="flex-1 h-px bg-slate-200"></div>
+                      <span className="px-4 py-1 text-sm bg-slate-100 text-slate-600 font-medium rounded-full shadow-inner">
+                        {step.summary}
+                      </span>
+                      <div className="flex-1 h-px bg-slate-200"></div>
+                    </div>
+                  )}
+                  <div className={`w-full ${isLast ? 'bg-indigo-50/40 rounded-xl py-2' : ''}`}>
+                    {renderEquationLine(step.eq, isLast && !solved)}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Solved Status Indicator */}
+            {solved && (
+              <div className="mt-8 p-4 bg-emerald-50 border border-emerald-200 rounded-lg text-center">
+                <span className="text-emerald-800 font-bold text-lg tracking-wide uppercase">
+                  Equation Solved!
+                </span>
+              </div>
+            )}
+
+            {/* Action Popup Dialog */}
+            {activeSelection && (
+              <div
+                style={{ top: `${popupPos.top}px`, left: `${popupPos.left}px` }}
+                className="absolute z-50 w-60 bg-slate-900 text-white rounded-xl shadow-xl p-2.5 transition-all duration-150 animate-in fade-in zoom-in-95"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Pointer Arrow */}
+                <div
+                  style={{ left: `${popupPos.arrowLeft}px` }}
+                  className="absolute -top-2 w-4 h-4 bg-slate-900 rotate-45 transform -translate-x-1/2"
+                />
+                <div className="relative z-10 flex flex-col gap-1.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-0.5 border-b border-slate-800">
+                    Choose Transformation
+                  </div>
+                  {getActionOptions().map((opt, oIdx) => (
+                    <button
+                      key={oIdx}
+                      onClick={() => applyOperation(opt.action)}
+                      className="w-full text-left text-sm px-3 py-2 rounded-lg bg-slate-800 hover:bg-indigo-600 active:bg-indigo-700 transition-colors font-medium leading-snug"
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
